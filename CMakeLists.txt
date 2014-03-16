@@ -3,9 +3,11 @@ cmake_minimum_required(VERSION 2.8)
 project(hlfs)
 
 # ---- dependencies -----------------------------------------------------------
+find_package(Boost COMPONENTS system filesystem REQUIRED)
+
 find_package(PkgConfig)
-pkg_check_modules(HLLib REQUIRED)
-pkg_check_modules(FUSE REQUIRED)
+pkg_check_modules(HLLIB HLLib REQUIRED)
+pkg_check_modules(FUSE fuse REQUIRED)
 
 find_path(XATTR_INCLUDE_DIR attr/xattr.h)
 
@@ -35,7 +37,7 @@ else()
 endif()
 
 add_definitions(${FUSE_CFLAGS_OTHER})
-include_directories(${HLLIB_INCLUDE_DIR} ${XATTR_INCLUDE_DIR})
+include_directories(${HLLIB_INCLUDE_DIRS} ${XATTR_INCLUDE_DIR})
 
 # ---- build targets ----------------------------------------------------------
 add_subdirectory(src)

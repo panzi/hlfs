@@ -19,3 +19,15 @@
 
 #include "hlfs.h"
 
+#include <iostream>
+#include <stdexcept>
+
+int main(int argc, char *argv[]) {
+	try {
+		return HLFS::HLFS(argc, argv).run();
+	}
+	catch (const std::exception &exc) {
+		std::cerr << "*** error: " << exc.what() << std::endl;
+		return 1;
+	}
+}
