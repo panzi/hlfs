@@ -20,6 +20,10 @@
 #include "hlfs.h"
 
 #include <string.h>
+#include <stdint.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <boost/filesystem/operations.hpp>
 
@@ -252,29 +256,85 @@ void HLFS::HLFS::init() {
     }
 }
 
+static struct stat *hlfs_stat(const HLLib::CDirectoryItem *item, struct stat *stbuf) {
+    stbuf->st_ino = (ino_t) item;
+    if (item->GetType() == HL_ITEM_FOLDER) {
+        stbuf->st_mode  = S_IFDIR | 0555;
+        stbuf->st_nlink = ((HLLib::CDirectoryFolder *) item)->GetCount() + 2;
+    }
+    else {
+        stbuf->st_mode  = S_IFREG | 0444;
+        stbuf->st_nlink = 1;
+        stbuf->st_size  = ((HLLib::CDirectoryFile *) item)->GetSize();
+    }
+    return stbuf;
+}
+
 int HLFS::HLFS::getattr(const char *path, struct stat *stbuf) {
-    // TODO
-    (void)path;
-    (void)stbuf;
-    return -EINVAL;
+    HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+
+    memset(stbuf, 0, sizeof(struct stat));
+
+    if (!item) {
+        return -ENOENT;
+    }
+
+    hlfs_stat(item, stbuf);
+
+    struct stat archst;
+    if (stat(m_archive.c_str(), &archst) == 0) {
+        stbuf->st_uid = archst.st_uid;
+        stbuf->st_gid = archst.st_gid;
+        stbuf->st_blksize = archst.st_blksize;
+        stbuf->st_atime = archst.st_atime;
+        stbuf->st_ctime = archst.st_ctime;
+        stbuf->st_mtime = archst.st_mtime;
+        return 0;
+    }
+    else {
+        return -errno;
+    }
 }
 
 int HLFS::HLFS::opendir(const char *path, struct fuse_file_info *fi) {
-    // TODO
-    (void)path;
-    (void)fi;
-    return -EINVAL;
+    HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+
+    if (!item) {
+        return -ENOENT;
+    }
+
+    if (item->GetType() != HL_ITEM_FOLDER) {
+        return -ENOTDIR;
+    }
+
+    if((fi->flags & 3) != O_RDONLY) {
+        return -EACCES;
+    }
+
+    fi->fh = (intptr_t) (HLLib::CDirectoryFolder *) item;
+
+    return 0;
 }
 
 int HLFS::HLFS::readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             off_t offset, struct fuse_file_info *fi) {
-    // TODO
     (void)path;
-    (void)buf;
-    (void)filler;
     (void)offset;
-    (void)fi;
-    return -EINVAL;
+
+    HLLib::CDirectoryFolder *folder = (HLLib::CDirectoryFolder*)fi->fh;
+
+    struct stat stbuf;
+    memset(&stbuf, 0, sizeof(struct stat));
+
+    if (filler(buf, ".", hlfs_stat(folder, &stbuf), 0)) return 0;
+    if (filler(buf, "..", NULL, 0)) return 0;
+
+    for (hlUInt i = 0, n = folder->GetCount(); i < n; ++ i) {
+        HLLib::CDirectoryItem *item = folder->GetItem(i);
+        if (filler(buf, item->GetName(), hlfs_stat(item, &stbuf), 0)) return 0;
+    }
+
+    return 0;
 }
 
 int HLFS::HLFS::open(const char *path, struct fuse_file_info *fi) {
