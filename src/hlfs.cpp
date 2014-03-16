@@ -19,11 +19,17 @@
 
 #include "hlfs.h"
 
+#ifndef HAVE_STRLCPY
+#	include "strlcpy.h"
+#endif
+
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <attr/xattr.h>
 
 #include <boost/filesystem/operations.hpp>
 
@@ -123,7 +129,7 @@ void usage(const char *binary) {
 HLFS::HLFS::HLFS(int argc, char *argv[]) : m_args(argc, argv, false), m_flags(HLFS_OPTS_OK), m_package(0) {
     struct hlfs_config conf(m_archive, m_mountpoint, m_flags);
     m_args.add_arg("-s"); // HLLib does not support multithreading
-    m_args.parse(&conf, hlfs_opts, hlfs_opt_proc);
+	m_args.parse(&conf, hlfs_opts, hlfs_opt_proc);
 
     if (m_flags == HLFS_OPTS_OK) {
         if (conf.argind < 1) {
@@ -181,10 +187,12 @@ static int hlfs_read_buf(const char *path, struct fuse_bufvec **bufp,
 }
 #endif
 
+/*
 static int hlfs_statfs(const char *path, struct statvfs *stbuf) {
     return ((HLFS::HLFS*) fuse_get_context()->private_data)->statfs(
         path, stbuf);
 }
+*/
 
 static int hlfs_listxattr(const char *path, char *buf, size_t size) {
     return ((HLFS::HLFS*) fuse_get_context()->private_data)->listxattr(
@@ -220,7 +228,7 @@ void HLFS::HLFS::setup() {
     m_operations.getattr          = hlfs_getattr;
     m_operations.open             = hlfs_open;
     m_operations.read             = hlfs_read;
-    m_operations.statfs           = hlfs_statfs;
+//    m_operations.statfs           = hlfs_statfs;
     m_operations.getxattr         = hlfs_getxattr;
     m_operations.listxattr        = hlfs_listxattr;
     m_operations.opendir          = hlfs_opendir;
@@ -260,18 +268,18 @@ static struct stat *hlfs_stat(const HLLib::CDirectoryItem *item, struct stat *st
     stbuf->st_ino = (ino_t) item;
     if (item->GetType() == HL_ITEM_FOLDER) {
         stbuf->st_mode  = S_IFDIR | 0555;
-        stbuf->st_nlink = ((HLLib::CDirectoryFolder *) item)->GetCount() + 2;
+		stbuf->st_nlink = ((const HLLib::CDirectoryFolder *) item)->GetCount() + 2;
     }
     else {
         stbuf->st_mode  = S_IFREG | 0444;
         stbuf->st_nlink = 1;
-        stbuf->st_size  = ((HLLib::CDirectoryFile *) item)->GetSize();
+		stbuf->st_size  = ((const HLLib::CDirectoryFile *) item)->GetSize();
     }
     return stbuf;
 }
 
 int HLFS::HLFS::getattr(const char *path, struct stat *stbuf) {
-    HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+	const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
 
     memset(stbuf, 0, sizeof(struct stat));
 
@@ -297,7 +305,7 @@ int HLFS::HLFS::getattr(const char *path, struct stat *stbuf) {
 }
 
 int HLFS::HLFS::opendir(const char *path, struct fuse_file_info *fi) {
-    HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+	const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
 
     if (!item) {
         return -ENOENT;
@@ -311,7 +319,7 @@ int HLFS::HLFS::opendir(const char *path, struct fuse_file_info *fi) {
         return -EACCES;
     }
 
-    fi->fh = (intptr_t) (HLLib::CDirectoryFolder *) item;
+	fi->fh = (intptr_t) (const HLLib::CDirectoryFolder *) item;
 
     return 0;
 }
@@ -321,7 +329,7 @@ int HLFS::HLFS::readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     (void)path;
     (void)offset;
 
-    HLLib::CDirectoryFolder *folder = (HLLib::CDirectoryFolder*)fi->fh;
+	const HLLib::CDirectoryFolder *folder = (const HLLib::CDirectoryFolder*)fi->fh;
 
     struct stat stbuf;
     memset(&stbuf, 0, sizeof(struct stat));
@@ -330,7 +338,7 @@ int HLFS::HLFS::readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     if (filler(buf, "..", NULL, 0)) return 0;
 
     for (hlUInt i = 0, n = folder->GetCount(); i < n; ++ i) {
-        HLLib::CDirectoryItem *item = folder->GetItem(i);
+		const HLLib::CDirectoryItem *item = folder->GetItem(i);
         if (filler(buf, item->GetName(), hlfs_stat(item, &stbuf), 0)) return 0;
     }
 
@@ -338,60 +346,197 @@ int HLFS::HLFS::readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 }
 
 int HLFS::HLFS::open(const char *path, struct fuse_file_info *fi) {
-    // TODO
-    (void)path;
-    (void)fi;
-    return -EINVAL;
+	const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+
+	if (!item) {
+		return -ENOENT;
+	}
+
+	if (item->GetType() == HL_ITEM_FOLDER) {
+		return -EISDIR;
+	}
+
+	if ((fi->flags & 3) != O_RDONLY) {
+		return -EACCES;
+	}
+
+	fi->keep_cache = 1;
+	fi->fh = (intptr_t) (const HLLib::CDirectoryFile *) item;
+
+	return 0;
 }
 
 int HLFS::HLFS::read(const char *path, char *buf, size_t size, off_t offset,
          struct fuse_file_info *fi) {
-    // TODO
-    (void)path;
-    (void)buf;
-    (void)size;
-    (void)offset;
-    (void)fi;
-    return -EINVAL;
+	(void)path;
+
+	if (offset < 0) return -EINVAL;
+
+	const HLLib::CDirectoryFile *file = (const HLLib::CDirectoryFile *) fi->fh;
+	hlUInt fileSize = file->GetSize();
+
+	if ((size_t)offset >= fileSize) return 0;
+
+	if (offset + size > fileSize) {
+		size = fileSize - offset;
+	}
+
+	memcpy(buf, (const char *)file->GetData() + offset, size);
+
+	return size;
 }
 
 #if FUSE_USE_VERSION >= 29
 int HLFS::HLFS::read_buf(const char *path, struct fuse_bufvec **bufp,
              size_t size, off_t offset, struct fuse_file_info *fi) {
-    // TODO
-    (void)path;
-    (void)bufp;
-    (void)size;
-    (void)offset;
-    (void)fi;
-    return -EINVAL;
+	(void)path;
+
+	if (offset < 0) return -EINVAL;
+
+	const HLLib::CDirectoryFile *file = (const HLLib::CDirectoryFile *) fi->fh;
+	hlUInt fileSize = file->GetSize();
+
+	struct fuse_bufvec *bufvec = (struct fuse_bufvec*)calloc(1, sizeof(struct fuse_bufvec));
+	if (!bufvec) return -ENOMEM;
+
+	bufvec->buf[0].fd = -1;
+
+	if ((size_t)offset >= fileSize) {
+		size = 0;
+	}
+	else {
+		if (offset + size > fileSize) {
+			size = fileSize - offset;
+		}
+
+		bufvec->count = 1;
+		bufvec->buf[0].size = size;
+		bufvec->buf[0].mem  = (void*)((const char*)file->GetData() + offset);
+	}
+
+	*bufp = bufvec;
+
+	return size;
 }
 #endif
 
+/*
 int HLFS::HLFS::statfs(const char *path, struct statvfs *stbuf) {
     // TODO
     (void)path;
     (void)stbuf;
     return -EINVAL;
 }
+*/
+
+#define PKG_ATTR_PREFIX "Package "
 
 int HLFS::HLFS::listxattr(const char *path, char *buf, size_t size) {
-    // TODO
-    (void)path;
-    (void)buf;
-    (void)size;
-    return -EINVAL;
+	(void)path;
+
+	size_t listSize = 0;
+
+	for (hlUInt attr = 0, n = m_package->GetAttributeCount(); attr < n; ++ attr) {
+		const hlChar *name = m_package->GetAttributeName((HLPackageAttribute)attr);
+		size_t nameSize = strlen(name) + 1;
+		if (listSize + sizeof(PKG_ATTR_PREFIX) + nameSize > size) {
+			return -ERANGE;
+		}
+		memcpy(buf + listSize, PKG_ATTR_PREFIX, sizeof(PKG_ATTR_PREFIX));
+		memcpy(buf + listSize + sizeof(PKG_ATTR_PREFIX), name, nameSize);
+		listSize += nameSize;
+	}
+
+	for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
+		const hlChar *name = m_package->GetItemAttributeName((HLPackageAttribute)attr);
+		size_t nameSize = strlen(name) + 1;
+		if (listSize + nameSize > size) {
+			return -ERANGE;
+		}
+		memcpy(buf + listSize, name, nameSize);
+		listSize += nameSize;
+	}
+
+	return listSize;
+}
+
+static int hlfs_getxattr(const HLAttribute &attribute, char *buf, size_t size) {
+	size_t count = 0;
+	int icount = 0;
+
+	switch (attribute.eAttributeType) {
+	case HL_ATTRIBUTE_BOOLEAN:
+		count = strlcpy(buf, attribute.Value.Boolean.bValue ? "true" : "false", size);
+		break;
+
+	case HL_ATTRIBUTE_INTEGER:
+		icount = snprintf(buf, size, "%d", attribute.Value.Integer.iValue);
+		if (icount < 0) return -ENOATTR;
+		count = icount;
+		break;
+
+	case HL_ATTRIBUTE_UNSIGNED_INTEGER:
+		if (attribute.Value.UnsignedInteger.bHexadecimal) {
+			icount = snprintf(buf, size, "0x%x", attribute.Value.UnsignedInteger.uiValue);
+		}
+		else {
+			icount = snprintf(buf, size, "%u", attribute.Value.UnsignedInteger.uiValue);
+		}
+		if (icount < 0) return -ENOATTR;
+		count = icount;
+		break;
+
+	case HL_ATTRIBUTE_FLOAT:
+		icount = snprintf(buf, size, "%a", (double)attribute.Value.Float.fValue);
+		if (icount < 0) return -ENOATTR;
+		count = icount;
+		break;
+
+	case HL_ATTRIBUTE_STRING:
+		count = strlcpy(buf, attribute.Value.String.lpValue, size);
+		break;
+
+	default:
+		return -ENOATTR;
+	}
+
+	count += 1; // NIL
+	if (count > size) {
+		return -ERANGE;
+	}
+
+	return count;
 }
 
 int HLFS::HLFS::getxattr(const char *path, const char *name, char *buf, size_t size) {
-    // TODO
-    (void)path;
-    (void)name;
-    (void)buf;
-    (void)size;
-    return -EINVAL;
+	if (strncmp(PKG_ATTR_PREFIX, name, sizeof(PKG_ATTR_PREFIX)) == 0) {
+		for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
+			const hlChar *attrName = m_package->GetItemAttributeName((HLPackageAttribute)attr);
+			if (strcmp(attrName, name + sizeof(PKG_ATTR_PREFIX)) == 0) {
+				HLAttribute attribute;
+				if (!m_package->GetAttribute((HLPackageAttribute)attr, attribute)) {
+					return -ENOATTR;
+				}
+				return hlfs_getxattr(attribute, buf, size);
+			}
+		}
+	}
+
+	for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
+		if (strcmp(m_package->GetItemAttributeName((HLPackageAttribute)attr), name) == 0) {
+			const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+			HLAttribute attribute;
+			if (!m_package->GetItemAttribute(item, (HLPackageAttribute)attr, attribute)) {
+				return -ENOATTR;
+			}
+			return hlfs_getxattr(attribute, buf, size);
+		}
+	}
+
+	return -ENOATTR;
 }
 
 void HLFS::HLFS::clear() {
     delete m_package;
+	m_package = 0;
 }

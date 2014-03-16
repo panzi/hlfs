@@ -51,7 +51,7 @@ namespace HLFS {
 		int read_buf(const char *path, struct fuse_bufvec **bufp,
 					 size_t size, off_t offset, struct fuse_file_info *fi);
 #endif
-		int statfs(const char *path, struct statvfs *stbuf);
+//		int statfs(const char *path, struct statvfs *stbuf);
 		int listxattr(const char *path, char *buf, size_t size);
 		int getxattr(const char *path, const char *name, char *buf, size_t size);
 
@@ -59,7 +59,6 @@ namespace HLFS {
 
 	private:
 		void setup();
-//		void statfs(const Node *node);
 
 		FuseArgs               m_args;
 		int                    m_flags;
