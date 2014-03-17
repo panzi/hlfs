@@ -532,26 +532,34 @@ static void hlfs_copy_xattr_name(const char *prefix, const char *name, char *buf
 #define ITEM_ATTR_PREFIX_SIZE (sizeof(ITEM_ATTR_PREFIX) - 1)
 
 int HLFS::HLFS::listxattr(const char *path, char *buf, size_t size) {
-	(void)path;
+	const HLLib::CDirectoryFolder *root = m_package->GetRoot();
+	if (root == 0) return -ENOENT;
+
+	const HLLib::CDirectoryItem *item = root->GetRelativeItem(path);
+	HLAttribute attribute;
 
 	size_t listSize = 0;
 
 	for (hlUInt attr = 0, n = m_package->GetAttributeCount(); attr < n; ++ attr) {
-		const hlChar *name = m_package->GetAttributeName((HLPackageAttribute)attr);
-		size_t nameSize = strlen(PKG_ATTR_PREFIX) + strlen(name) + 1;
-		if (listSize < size) {
-			hlfs_copy_xattr_name(PKG_ATTR_PREFIX, name, buf + listSize, size - listSize);
+		if (m_package->GetAttribute((HLPackageAttribute)attr, attribute)) {
+			const hlChar *name = m_package->GetAttributeName((HLPackageAttribute)attr);
+			size_t nameSize = strlen(PKG_ATTR_PREFIX) + strlen(name) + 1;
+			if (listSize < size) {
+				hlfs_copy_xattr_name(PKG_ATTR_PREFIX, name, buf + listSize, size - listSize);
+			}
+			listSize += nameSize;
 		}
-		listSize += nameSize;
 	}
 
 	for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
-		const hlChar *name = m_package->GetItemAttributeName((HLPackageAttribute)attr);
-		size_t nameSize = strlen(ITEM_ATTR_PREFIX) + strlen(name) + 1;
-		if (listSize < size) {
-			hlfs_copy_xattr_name(ITEM_ATTR_PREFIX, name, buf + listSize, size - listSize);
+		if (m_package->GetItemAttribute(item, (HLPackageAttribute)attr, attribute)) {
+			const hlChar *name = m_package->GetItemAttributeName((HLPackageAttribute)attr);
+			size_t nameSize = strlen(ITEM_ATTR_PREFIX) + strlen(name) + 1;
+			if (listSize < size) {
+				hlfs_copy_xattr_name(ITEM_ATTR_PREFIX, name, buf + listSize, size - listSize);
+			}
+			listSize += nameSize;
 		}
-		listSize += nameSize;
 	}
 
 	if (size > 0 && listSize > size) {
@@ -646,7 +654,7 @@ int HLFS::HLFS::getxattr(const char *path, const char *name, char *buf, size_t s
 			if (hlfs_xattr_name_match(PKG_ATTR_PREFIX, attrName, name)) {
 				HLAttribute attribute;
 				if (!m_package->GetAttribute((HLPackageAttribute)attr, attribute)) {
-					return -ENOTSUP;
+					return -ENOATTR;
 				}
 				return hlfs_getxattr(attribute, buf, size);
 			}
@@ -663,7 +671,7 @@ int HLFS::HLFS::getxattr(const char *path, const char *name, char *buf, size_t s
 				const HLLib::CDirectoryItem *item = root->GetRelativeItem(path);
 				HLAttribute attribute;
 				if (!m_package->GetItemAttribute(item, (HLPackageAttribute)attr, attribute)) {
-					return -ENOTSUP;
+					return -ENOATTR;
 				}
 				return hlfs_getxattr(attribute, buf, size);
 			}
