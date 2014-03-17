@@ -44,32 +44,33 @@ static void usage(const char *binary);
 
 const std::string HLFS::VERSION = "1.0.0";
 
-enum {
-	HLFS_OPTS_OK      = 0,
-	HLFS_OPTS_HELP    = 1,
-	HLFS_OPTS_VERSION = 2,
-	HLFS_OPTS_ERROR   = 4
-};
-
 struct hlfs_config {
-	hlfs_config(
-		std::string &archive,
-		std::string &mountpoint,
-		int &flags)
-	: archive(archive),
-	  mountpoint(mountpoint),
-	  argind(0),
-	  flags(flags) {}
+	hlfs_config() :
+		help(false),
+		version(false),
+		error(false),
+		has_archive(false),
+		has_mountpoint(false),
+		has_type(false),
+		nonoptc(0) {}
 
-	std::string &archive;
-	std::string &mountpoint;
-	int argind;
-	int &flags;
+	std::string archive;
+	std::string mountpoint;
+	std::string type;
+	bool help;
+	bool version;
+	bool error;
+	bool has_archive;
+	bool has_mountpoint;
+	bool has_type;
+	int nonoptc;
 };
 
 enum {
 	KEY_HELP,
-	KEY_VERSION
+	KEY_VERSION,
+	KEY_TYPE,
+	KEY_TYPE_LONG
 };
 
 static struct fuse_opt hlfs_opts[] = {
@@ -77,40 +78,86 @@ static struct fuse_opt hlfs_opts[] = {
 	FUSE_OPT_KEY("--version", KEY_VERSION),
 	FUSE_OPT_KEY("-h",        KEY_HELP),
 	FUSE_OPT_KEY("--help",    KEY_HELP),
+	FUSE_OPT_KEY("-t %s",     KEY_TYPE),
+	FUSE_OPT_KEY("--type=%s", KEY_TYPE_LONG),
 	FUSE_OPT_END
 };
 
+static int hl_pkg_type_from_name(const char *name) {
+	if (strcasecmp(name, "auto") == 0) {
+		return HL_PACKAGE_NONE;
+	}
+	else if (strcasecmp(name, "bsp") == 0) {
+		return HL_PACKAGE_BSP;
+	}
+	else if (strcasecmp(name, "gcf") == 0) {
+		return HL_PACKAGE_GCF;
+	}
+	else if (strcasecmp(name, "pak") == 0) {
+		return HL_PACKAGE_PAK;
+	}
+	else if (strcasecmp(name, "vbsp") == 0) {
+		return HL_PACKAGE_VBSP;
+	}
+	else if (strcasecmp(name, "wad") == 0) {
+		return HL_PACKAGE_WAD;
+	}
+	else if (strcasecmp(name, "xzp") == 0) {
+		return HL_PACKAGE_XZP;
+	}
+	else if (strcasecmp(name, "zip") == 0) {
+		return HL_PACKAGE_ZIP;
+	}
+	else if (strcasecmp(name, "ncf") == 0) {
+		return HL_PACKAGE_NCF;
+	}
+	else if (strcasecmp(name, "vpk") == 0) {
+		return HL_PACKAGE_VPK;
+	}
+	else if (strcasecmp(name, "sga") == 0) {
+		return HL_PACKAGE_SGA;
+	}
+	return -1;
+}
+
 static int hlfs_opt_proc(struct hlfs_config *conf, const char *arg, int key, struct fuse_args *outargs) {
+	(void)outargs;
+
 	switch (key) {
 	case FUSE_OPT_KEY_NONOPT:
-		switch (conf->argind) {
+		switch (conf->nonoptc ++) {
 		case 0:
 			conf->archive = arg;
-			++ conf->argind;
+			conf->has_archive = true;
 			return 0;
 
 		case 1:
 			conf->mountpoint = arg;
-			++ conf->argind;
+			conf->has_mountpoint = true;
 			break;
 
 		default:
-			std::cerr << "*** error: to many arguments\n";
-			usage(outargs->argv[0]);
-			conf->flags |= HLFS_OPTS_ERROR;
-			++ conf->argind;
+			return 0;
 		}
 		break;
 
 	case KEY_HELP:
-		usage(outargs->argv[0]);
-		conf->flags |= HLFS_OPTS_HELP;
+		conf->help = true;
 		break;
 
 	case KEY_VERSION:
-		std::cout << "hlfs version " << HLFS::VERSION << std::endl;
-		conf->flags |= HLFS_OPTS_VERSION;
+		conf->version = true;
 		break;
+
+	case KEY_TYPE:
+		conf->type = arg + 2;
+		conf->has_type = true;
+		return 0;
+
+	case KEY_TYPE_LONG:
+		conf->type = arg + 7;
+		conf->has_type = true;
+		return 0;
 	}
 	return 1;
 }
@@ -121,11 +168,14 @@ static void usage(const char *binary) {
 		"This filesystem is read-only, single-threaded and only supports blocking operations.\n"
 		"\n"
 		"Options:\n"
-		"    -o opt,[opt...]        mount options (see: man fuse)\n"
-		"    -h   --help            print help\n"
-		"    -v   --version         print version\n"
-		"    -d   -o debug          enable debug output (implies -f)\n"
-		"    -f                     foreground operation\n"
+		"    -o opt,[opt...]           mount options (see: man fuse)\n"
+		"    -h      --help            print help\n"
+		"    -v      --version         print version\n"
+		"    -t TYPE --type=TYPE       archive has type TYPE (don't do auto detection)\n"
+		"                              types: bsp, gcf, pak, vbsp, wad, xzp, zip, ncf,\n"
+		"                                     vpk, sga, auto (do auto detection)\n"
+		"    -d      -o debug          enable debug output (implies -f)\n"
+		"    -f                        foreground operation\n"
 		"\n"
 		"(c) 2014 Mathias Panzenböck\n";
 }
@@ -180,30 +230,70 @@ static int hlfs_getxattr(const char *path, const char *name, char *buf, size_t s
 		path, name, buf, size);
 }
 
-HLFS::HLFS::HLFS(int argc, char *argv[]) : m_args(), m_flags(HLFS_OPTS_OK), m_package(0) {
+HLFS::HLFS::HLFS(int argc, char *argv[]) : m_args(), m_action(RUN_FUSE), m_package(0), m_type(HL_PACKAGE_NONE) {
 	for (int i = 0; i < argc; ++ i) {
 		m_args.add_arg(argv[i]);
 	}
 	// HLLib does not support multithreading
 	m_args.add_arg("-s");
 
-	struct hlfs_config conf(m_archive, m_mountpoint, m_flags);
+	struct hlfs_config conf;
 	m_args.parse(&conf, hlfs_opts, hlfs_opt_proc);
 
-	if (m_flags == HLFS_OPTS_OK) {
-		if (conf.argind < 1) {
-			std::cerr << "*** error: required argument ARCHIVE is missing.\n";
-			usage(argv[0]);
-			m_flags |= HLFS_OPTS_ERROR;
+	if (conf.has_archive)    m_archive    = fs::absolute(conf.archive).string();
+	if (conf.has_mountpoint) m_mountpoint = fs::absolute(conf.mountpoint).string();
+
+	if (conf.has_type) {
+		int type = hl_pkg_type_from_name(conf.type.c_str());
+
+		if (type < 0) {
+			std::cerr
+				<< "*** error: illegal package type: " << conf.type << "\n"
+				<< "see --help for more inforamtion\n";
+			conf.error = true;
 		}
-		else if (conf.argind < 2) {
-			std::cerr << "*** error: required argument MOUNTPOINT is missing.\n";
-			usage(argv[0]);
-			m_flags |= HLFS_OPTS_ERROR;
+		else {
+			m_type = (HLPackageType) type;
 		}
 	}
 
-	m_archive = fs::absolute(m_archive).string();
+	if (!conf.help && !conf.version && !conf.error) {
+		if (!conf.has_archive) {
+			std::cerr
+				<< "*** error: required argument ARCHIVE is missing.\n"
+				<< "see --help for more inforamtion\n";
+			conf.error = true;
+		}
+		else if (!conf.has_mountpoint) {
+			std::cerr
+				<< "*** error: required argument MOUNTPOINT is missing.\n"
+				<< "see --help for more inforamtion\n";
+			conf.error = true;
+		}
+		else if (conf.nonoptc > 2) {
+			std::cerr
+				<< "*** error: to many arguments\n"
+				<< "see --help for more inforamtion\n";
+			conf.error = true;
+		}
+	}
+
+	if (conf.help) {
+		usage(argc > 0 ? argv[0] : "hlfs");
+		m_action = EXIT_OK;
+	}
+	else if (conf.version) {
+		std::cout
+			<< "hlfs: " << ::HLFS::VERSION << "\n"
+			<< "HLLib: " << HL_VERSION_STRING << "\n";
+		m_action = EXIT_OK;
+	}
+	else if (conf.error) {
+		m_action = EXIT_ERROR;
+	}
+	else {
+		m_action = RUN_FUSE;
+	}
 
 	memset(&m_operations, 0, sizeof(m_operations));
 
@@ -228,20 +318,27 @@ HLFS::HLFS::~HLFS() {
 }
 
 int HLFS::HLFS::run() {
-	if (m_flags & HLFS_OPTS_ERROR) return 1;
-	if (m_flags & (HLFS_OPTS_HELP | HLFS_OPTS_VERSION)) return 0;
-
+	switch (m_action) {
+	case EXIT_OK:    return 0;
+	case EXIT_ERROR: return 1;
+	case RUN_FUSE:
+		break;
+	}
 
 	int mode = HL_MODE_READ;
 
-	if (sizeof(off_t) >= 8) {
+	if (sizeof(off_t) >= 8 && sizeof(size_t) >= 8) {
 		mode |= HL_MODE_QUICK_FILEMAPPING;
 	}
 
-	m_package = HLLib::CPackage::AutoOpen(m_archive.c_str(), mode);
+	m_package = m_type == HL_PACKAGE_NONE ?
+		HLLib::CPackage::AutoOpen(m_archive.c_str(), mode) :
+		HLLib::CPackage::Open(m_archive.c_str(), mode, m_type);
 
 	if (m_package == 0 || !m_package->GetOpened()) {
-		throw std::runtime_error("could not open or determine file type of package");
+		throw std::runtime_error(m_type == HL_PACKAGE_NONE ?
+			"could not determine file type or parse package" :
+			"could not parse package");
 	}
 
 	return fuse_main(m_args.argc(), m_args.argv(), &m_operations, this);

@@ -53,12 +53,19 @@ namespace HLFS {
 
 	private:
 
+		enum RunAction {
+			RUN_FUSE,
+			EXIT_OK,
+			EXIT_ERROR
+		};
+
 		FuseArgs               m_args;
-		int                    m_flags;
+		RunAction              m_action;
 		std::string            m_archive;
 		std::string            m_mountpoint;
 		struct fuse_operations m_operations;
 		HLLib::CPackage       *m_package;
+		HLPackageType          m_type;
 	};
 }
 
