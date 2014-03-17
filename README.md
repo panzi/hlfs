@@ -33,7 +33,7 @@ Supported package formats: bsp, gcf, pak, vbsp, wad, xzp, zip, ncf, vpk, sga.
 
 ### Dependencies
 
- * [VTFLib](https://github.com/panzi/VTFLib)
+ * [HLLib](https://github.com/panzi/HLLib)
  * [FUSE](http://fuse.sourceforge.net/)
  * [Boost](http://www.boost.org/)
 
