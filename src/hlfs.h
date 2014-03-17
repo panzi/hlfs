@@ -39,7 +39,6 @@ namespace HLFS {
 
 		int run();
 
-		void init();
 		int getattr(const char *path, struct stat *stbuf);
 		int opendir(const char *path, struct fuse_file_info *fi);
 		int readdir(const char *path, void *buf, fuse_fill_dir_t filler,
@@ -47,18 +46,12 @@ namespace HLFS {
 		int open(const char *path, struct fuse_file_info *fi);
 		int read(const char *path, char *buf, size_t size, off_t offset,
 				 struct fuse_file_info *fi);
-#if FUSE_USE_VERSION >= 29
-		int read_buf(const char *path, struct fuse_bufvec **bufp,
-					 size_t size, off_t offset, struct fuse_file_info *fi);
-#endif
+		int release(const char *path, struct fuse_file_info *fi);
 //		int statfs(const char *path, struct statvfs *stbuf);
 		int listxattr(const char *path, char *buf, size_t size);
 		int getxattr(const char *path, const char *name, char *buf, size_t size);
 
-		void clear();
-
 	private:
-		void setup();
 
 		FuseArgs               m_args;
 		int                    m_flags;

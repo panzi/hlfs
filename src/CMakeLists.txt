@@ -13,6 +13,13 @@ else()
 	add_definitions(-DHAVE_STRLCPY)
 endif()
 
+if(NOT HAVE_STRLCAT)
+	set(hlfs_SRCS ${hlfs_SRCS} strlcat.c)
+	set(hlfs_HDRS ${hlfs_HDRS} strlcat.h)
+else()
+	add_definitions(-DHAVE_STRLCAT)
+endif()
+
 add_executable(hlfs ${hlfs_SRCS} ${hlfs_HDRS})
 target_link_libraries(hlfs
 	${HLLIB_LIBRARIES}

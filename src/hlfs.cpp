@@ -23,9 +23,14 @@
 #	include "strlcpy.h"
 #endif
 
+#ifndef HAVE_STRLCAT
+#	include "strlcat.h"
+#endif
+
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -110,7 +115,7 @@ static int hlfs_opt_proc(struct hlfs_config *conf, const char *arg, int key, str
 	return 1;
 }
 
-void usage(const char *binary) {
+static void usage(const char *binary) {
 	std::cout << "Usage: " << binary << " [OPTIONS] ARCHIVE MOUNTPOINT\n"
 		"Mount valve game archives.\n"
 		"This filesystem is read-only, single-threaded and only supports blocking operations.\n"
@@ -126,32 +131,6 @@ void usage(const char *binary) {
 }
 
 
-HLFS::HLFS::HLFS(int argc, char *argv[]) : m_args(argc, argv, false), m_flags(HLFS_OPTS_OK), m_package(0) {
-	struct hlfs_config conf(m_archive, m_mountpoint, m_flags);
-	m_args.add_arg("-s"); // HLLib does not support multithreading
-	m_args.parse(&conf, hlfs_opts, hlfs_opt_proc);
-
-	if (m_flags == HLFS_OPTS_OK) {
-		if (conf.argind < 1) {
-			std::cerr << "*** error: required argument ARCHIVE is missing.\n";
-			usage(argv[0]);
-			m_flags |= HLFS_OPTS_ERROR;
-		}
-		else if (conf.argind < 2) {
-			std::cerr << "*** error: required argument MOUNTPOINT is missing.\n";
-			usage(argv[0]);
-			m_flags |= HLFS_OPTS_ERROR;
-		}
-	}
-
-	m_archive = fs::absolute(m_archive).string();
-	setup();
-}
-
-HLFS::HLFS::~HLFS() {
-	clear();
-}
-
 static int hlfs_getattr(const char *path, struct stat *stbuf) {
 	return ((HLFS::HLFS*) fuse_get_context()->private_data)->getattr(
 		path, stbuf);
@@ -163,7 +142,7 @@ static int hlfs_opendir(const char *path, struct fuse_file_info *fi) {
 }
 
 static int hlfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                        off_t offset, struct fuse_file_info *fi) {
+						off_t offset, struct fuse_file_info *fi) {
 	return ((HLFS::HLFS*) fuse_get_context()->private_data)->readdir(
 		path, buf, filler, offset, fi);
 }
@@ -174,18 +153,15 @@ static int hlfs_open(const char *path, struct fuse_file_info *fi) {
 }
 
 static int hlfs_read(const char *path, char *buf, size_t size, off_t offset,
-                     struct fuse_file_info *fi) {
+					 struct fuse_file_info *fi) {
 	return ((HLFS::HLFS*) fuse_get_context()->private_data)->read(
 		path, buf, size, offset, fi);
 }
 
-#if FUSE_USE_VERSION >= 29
-static int hlfs_read_buf(const char *path, struct fuse_bufvec **bufp,
-                         size_t size, off_t offset, struct fuse_file_info *fi) {
-	return ((HLFS::HLFS*) fuse_get_context()->private_data)->read_buf(
-		path, bufp, size, offset, fi);
+static int hlfs_release(const char *path, struct fuse_file_info *fi) {
+	return ((HLFS::HLFS*) fuse_get_context()->private_data)->release(
+		path, fi);
 }
-#endif
 
 /*
 static int hlfs_statfs(const char *path, struct statvfs *stbuf) {
@@ -204,30 +180,37 @@ static int hlfs_getxattr(const char *path, const char *name, char *buf, size_t s
 		path, name, buf, size);
 }
 
-static void *hlfs_init(struct fuse_conn_info *) {
-	HLFS::HLFS *hlfs = (HLFS::HLFS*) fuse_get_context()->private_data;
-	try {
-		hlfs->init();
+HLFS::HLFS::HLFS(int argc, char *argv[]) : m_args(), m_flags(HLFS_OPTS_OK), m_package(0) {
+	for (int i = 0; i < argc; ++ i) {
+		m_args.add_arg(argv[i]);
 	}
-	catch (const std::exception &exc) {
-		std::cerr << "*** error: " << exc.what() << std::endl;
-		exit(1); // can't throw through C code
-	}
-	catch (...) {
-		std::cerr << "*** unknown exception\n";
-		exit(1); // can't throw through C code
+	// HLLib does not support multithreading
+	m_args.add_arg("-s");
+
+	struct hlfs_config conf(m_archive, m_mountpoint, m_flags);
+	m_args.parse(&conf, hlfs_opts, hlfs_opt_proc);
+
+	if (m_flags == HLFS_OPTS_OK) {
+		if (conf.argind < 1) {
+			std::cerr << "*** error: required argument ARCHIVE is missing.\n";
+			usage(argv[0]);
+			m_flags |= HLFS_OPTS_ERROR;
+		}
+		else if (conf.argind < 2) {
+			std::cerr << "*** error: required argument MOUNTPOINT is missing.\n";
+			usage(argv[0]);
+			m_flags |= HLFS_OPTS_ERROR;
+		}
 	}
 
-	return hlfs;
-}
+	m_archive = fs::absolute(m_archive).string();
 
-void HLFS::HLFS::setup() {
 	memset(&m_operations, 0, sizeof(m_operations));
 
-	m_operations.init             = hlfs_init;
 	m_operations.getattr          = hlfs_getattr;
 	m_operations.open             = hlfs_open;
 	m_operations.read             = hlfs_read;
+	m_operations.release          = hlfs_release;
 //	m_operations.statfs           = hlfs_statfs;
 	m_operations.getxattr         = hlfs_getxattr;
 	m_operations.listxattr        = hlfs_listxattr;
@@ -237,19 +220,17 @@ void HLFS::HLFS::setup() {
 
 #if FUSE_USE_VERSION >= 29
 	m_operations.flag_nopath      = 1;
-	m_operations.read_buf         = hlfs_read_buf;
 #endif
+}
+
+HLFS::HLFS::~HLFS() {
+	delete m_package;
 }
 
 int HLFS::HLFS::run() {
 	if (m_flags & HLFS_OPTS_ERROR) return 1;
 	if (m_flags & (HLFS_OPTS_HELP | HLFS_OPTS_VERSION)) return 0;
 
-	return fuse_main(m_args.argc(), m_args.argv(), &m_operations, this);
-}
-
-void HLFS::HLFS::init() {
-	clear();
 
 	int mode = HL_MODE_READ;
 
@@ -259,9 +240,11 @@ void HLFS::HLFS::init() {
 
 	m_package = HLLib::CPackage::AutoOpen(m_archive.c_str(), mode);
 
-	if (m_package == 0) {
+	if (m_package == 0 || !m_package->GetOpened()) {
 		throw std::runtime_error("could not open or determine file type of package");
 	}
+
+	return fuse_main(m_args.argc(), m_args.argv(), &m_operations, this);
 }
 
 static struct stat *hlfs_stat(const HLLib::CDirectoryItem *item, struct stat *stbuf) {
@@ -279,7 +262,10 @@ static struct stat *hlfs_stat(const HLLib::CDirectoryItem *item, struct stat *st
 }
 
 int HLFS::HLFS::getattr(const char *path, struct stat *stbuf) {
-	const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+	const HLLib::CDirectoryFolder *root = m_package->GetRoot();
+	if (root == 0) return -ENOENT;
+
+	const HLLib::CDirectoryItem *item = root->GetRelativeItem(path);
 
 	memset(stbuf, 0, sizeof(struct stat));
 
@@ -305,7 +291,10 @@ int HLFS::HLFS::getattr(const char *path, struct stat *stbuf) {
 }
 
 int HLFS::HLFS::opendir(const char *path, struct fuse_file_info *fi) {
-	const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+	const HLLib::CDirectoryFolder *root = m_package->GetRoot();
+	if (root == 0) return -ENOENT;
+
+	const HLLib::CDirectoryItem *item = root->GetRelativeItem(path);
 
 	if (!item) {
 		return -ENOENT;
@@ -346,7 +335,10 @@ int HLFS::HLFS::readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 }
 
 int HLFS::HLFS::open(const char *path, struct fuse_file_info *fi) {
-	const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
+	const HLLib::CDirectoryFolder *root = m_package->GetRoot();
+	if (root == 0) return -ENOENT;
+
+	const HLLib::CDirectoryItem *item = root->GetRelativeItem(path);
 
 	if (!item) {
 		return -ENOENT;
@@ -361,7 +353,20 @@ int HLFS::HLFS::open(const char *path, struct fuse_file_info *fi) {
 	}
 
 	fi->keep_cache = 1;
-	fi->fh = (intptr_t) (const HLLib::CDirectoryFile *) item;
+
+	HLLib::Streams::IStream *pInput = 0;
+
+	if (!m_package->CreateStream((HLLib::CDirectoryFile *)item, pInput))
+	{
+		return -EINVAL;
+	}
+
+	if (!pInput->Open(HL_MODE_READ)) {
+		m_package->ReleaseStream(pInput);
+		return -EACCES;
+	}
+
+	fi->fh = (intptr_t) pInput;
 
 	return 0;
 }
@@ -372,53 +377,22 @@ int HLFS::HLFS::read(const char *path, char *buf, size_t size, off_t offset,
 
 	if (offset < 0) return -EINVAL;
 
-	const HLLib::CDirectoryFile *file = (const HLLib::CDirectoryFile *) fi->fh;
-	hlUInt fileSize = file->GetSize();
+	HLLib::Streams::IStream *pInput = (HLLib::Streams::IStream *) fi->fh;
+	pInput->Seek(offset, HL_SEEK_BEGINNING);
 
-	if ((size_t)offset >= fileSize) return 0;
-
-	if (offset + size > fileSize) {
-		size = fileSize - offset;
-	}
-
-	memcpy(buf, (const char *)file->GetData() + offset, size);
-
-	return size;
+	return pInput->Read(buf, size);
 }
 
-#if FUSE_USE_VERSION >= 29
-int HLFS::HLFS::read_buf(const char *path, struct fuse_bufvec **bufp,
-                         size_t size, off_t offset, struct fuse_file_info *fi) {
+int HLFS::HLFS::release(const char *path, struct fuse_file_info *fi) {
 	(void)path;
 
-	if (offset < 0) return -EINVAL;
+	HLLib::Streams::IStream *pInput = (HLLib::Streams::IStream *) fi->fh;
 
-	const HLLib::CDirectoryFile *file = (const HLLib::CDirectoryFile *) fi->fh;
-	hlUInt fileSize = file->GetSize();
+	pInput->Close();
+	m_package->ReleaseStream(pInput);
 
-	struct fuse_bufvec *bufvec = (struct fuse_bufvec*)calloc(1, sizeof(struct fuse_bufvec));
-	if (!bufvec) return -ENOMEM;
-
-	bufvec->buf[0].fd = -1;
-
-	if ((size_t)offset >= fileSize) {
-		size = 0;
-	}
-	else {
-		if (offset + size > fileSize) {
-			size = fileSize - offset;
-		}
-
-		bufvec->count = 1;
-		bufvec->buf[0].size = size;
-		bufvec->buf[0].mem  = (void*)((const char*)file->GetData() + offset);
-	}
-
-	*bufp = bufvec;
-
-	return size;
+	return 0;
 }
-#endif
 
 /*
 int HLFS::HLFS::statfs(const char *path, struct statvfs *stbuf) {
@@ -429,7 +403,36 @@ int HLFS::HLFS::statfs(const char *path, struct statvfs *stbuf) {
 }
 */
 
-#define PKG_ATTR_PREFIX "Package "
+static char hlfs_fix_xattr_char(char ch) {
+	if (isalnum(ch)) {
+		return tolower(ch);
+	}
+	// allow some special characters:
+	else if (ch != '-' && ch != '_' && ch != ':' && ch != '+' && ch != '$' && ch != 0) {
+		return '_';
+	}
+	else {
+		return ch;
+	}
+}
+
+static void hlfs_copy_xattr_name(const char *prefix, const char *name, char *buf, size_t size) {
+	if (size > 0) {
+		size_t off = strlcpy(buf, prefix, size);
+		strlcat(buf, name, size);
+
+		if (off < size) {
+			for (char *ptr = buf + off; *ptr; ++ ptr) {
+				*ptr = hlfs_fix_xattr_char(*ptr);
+			}
+		}
+	}
+}
+
+#define PKG_ATTR_PREFIX "user.package."
+#define PKG_ATTR_PREFIX_SIZE (sizeof(PKG_ATTR_PREFIX) - 1)
+#define ITEM_ATTR_PREFIX "user."
+#define ITEM_ATTR_PREFIX_SIZE (sizeof(ITEM_ATTR_PREFIX) - 1)
 
 int HLFS::HLFS::listxattr(const char *path, char *buf, size_t size) {
 	(void)path;
@@ -438,105 +441,137 @@ int HLFS::HLFS::listxattr(const char *path, char *buf, size_t size) {
 
 	for (hlUInt attr = 0, n = m_package->GetAttributeCount(); attr < n; ++ attr) {
 		const hlChar *name = m_package->GetAttributeName((HLPackageAttribute)attr);
-		size_t nameSize = strlen(name) + 1;
-		if (listSize + sizeof(PKG_ATTR_PREFIX) + nameSize > size) {
-			return -ERANGE;
+		size_t nameSize = strlen(PKG_ATTR_PREFIX) + strlen(name) + 1;
+		if (listSize < size) {
+			hlfs_copy_xattr_name(PKG_ATTR_PREFIX, name, buf + listSize, size - listSize);
 		}
-		memcpy(buf + listSize, PKG_ATTR_PREFIX, sizeof(PKG_ATTR_PREFIX));
-		memcpy(buf + listSize + sizeof(PKG_ATTR_PREFIX), name, nameSize);
 		listSize += nameSize;
 	}
 
 	for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
 		const hlChar *name = m_package->GetItemAttributeName((HLPackageAttribute)attr);
-		size_t nameSize = strlen(name) + 1;
-		if (listSize + nameSize > size) {
-			return -ERANGE;
+		size_t nameSize = strlen(ITEM_ATTR_PREFIX) + strlen(name) + 1;
+		if (listSize < size) {
+			hlfs_copy_xattr_name(ITEM_ATTR_PREFIX, name, buf + listSize, size - listSize);
 		}
-		memcpy(buf + listSize, name, nameSize);
 		listSize += nameSize;
+	}
+
+	if (size > 0 && listSize > size) {
+		return -ERANGE;
 	}
 
 	return listSize;
 }
 
 static int hlfs_getxattr(const HLAttribute &attribute, char *buf, size_t size) {
+	// temp with enough room to print the string including a termination NIL.
+	// If size would be exactly big enough for the xattr value the snprintf/strlcpy
+	// functions would cut of the last character because they want to write a NIL.
+	char temp[64] = "";
+
 	size_t count = 0;
-	int icount = 0;
 
 	switch (attribute.eAttributeType) {
 	case HL_ATTRIBUTE_BOOLEAN:
-		count = strlcpy(buf, attribute.Value.Boolean.bValue ? "true" : "false", size);
-		break;
-
+	{
+		const char *val = attribute.Value.Boolean.bValue ? "true" : "false";
+		count = strlen(val);
+		memcpy(buf, val, size < count ? size : count);
+		return count;
+	}
 	case HL_ATTRIBUTE_INTEGER:
-		icount = snprintf(buf, size, "%d", attribute.Value.Integer.iValue);
-		if (icount < 0) return -ENOATTR;
+	{
+		int icount = snprintf(temp, sizeof(temp), "%d", attribute.Value.Integer.iValue);
+		if (icount < 0) return -ENOTSUP;
 		count = icount;
 		break;
-
+	}
 	case HL_ATTRIBUTE_UNSIGNED_INTEGER:
+	{
+		int icount;
 		if (attribute.Value.UnsignedInteger.bHexadecimal) {
-			icount = snprintf(buf, size, "0x%x", attribute.Value.UnsignedInteger.uiValue);
+			icount = snprintf(temp, sizeof(temp), "%x", attribute.Value.UnsignedInteger.uiValue);
 		}
 		else {
-			icount = snprintf(buf, size, "%u", attribute.Value.UnsignedInteger.uiValue);
+			icount = snprintf(temp, sizeof(temp), "%u", attribute.Value.UnsignedInteger.uiValue);
 		}
-		if (icount < 0) return -ENOATTR;
+		if (icount < 0) return -ENOTSUP;
 		count = icount;
 		break;
-
+	}
 	case HL_ATTRIBUTE_FLOAT:
-		icount = snprintf(buf, size, "%a", (double)attribute.Value.Float.fValue);
-		if (icount < 0) return -ENOATTR;
+	{
+		int icount = snprintf(temp, sizeof(temp), "%a", (double)attribute.Value.Float.fValue);
+		if (icount < 0) return -ENOTSUP;
 		count = icount;
 		break;
-
+	}
 	case HL_ATTRIBUTE_STRING:
-		count = strlcpy(buf, attribute.Value.String.lpValue, size);
-		break;
+		count = strlen(attribute.Value.String.lpValue);
+		memcpy(buf, attribute.Value.String.lpValue, size < count ? size : count);
+		return count;
 
 	default:
-		return -ENOATTR;
+		return -ENOTSUP;
 	}
 
-	count += 1; // NIL
-	if (count > size) {
+	// xattr value will not contain a termination NIL
+	memcpy(buf, temp, size < count ? size : count);
+
+	if (size > 0 && count > size) {
 		return -ERANGE;
 	}
 
 	return count;
 }
 
+static bool hlfs_xattr_name_match(const char *prefix, const char *name, const char *xattr_name) {
+	while (*prefix) {
+		if (*prefix ++ != *xattr_name ++) {
+			return false;
+		}
+	}
+
+	while (*name) {
+		if (hlfs_fix_xattr_char(*name ++) != *xattr_name ++) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 int HLFS::HLFS::getxattr(const char *path, const char *name, char *buf, size_t size) {
-	if (strncmp(PKG_ATTR_PREFIX, name, sizeof(PKG_ATTR_PREFIX)) == 0) {
-		for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
-			const hlChar *attrName = m_package->GetItemAttributeName((HLPackageAttribute)attr);
-			if (strcmp(attrName, name + sizeof(PKG_ATTR_PREFIX)) == 0) {
+	if (strncmp(PKG_ATTR_PREFIX, name, PKG_ATTR_PREFIX_SIZE) == 0) {
+		for (hlUInt attr = 0, n = m_package->GetAttributeCount(); attr < n; ++ attr) {
+			const hlChar *attrName = m_package->GetAttributeName((HLPackageAttribute)attr);
+			if (hlfs_xattr_name_match(PKG_ATTR_PREFIX, attrName, name)) {
 				HLAttribute attribute;
 				if (!m_package->GetAttribute((HLPackageAttribute)attr, attribute)) {
-					return -ENOATTR;
+					return -ENOTSUP;
 				}
 				return hlfs_getxattr(attribute, buf, size);
 			}
 		}
 	}
 
-	for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
-		if (strcmp(m_package->GetItemAttributeName((HLPackageAttribute)attr), name) == 0) {
-			const HLLib::CDirectoryItem *item = m_package->GetRoot()->GetRelativeItem(path);
-			HLAttribute attribute;
-			if (!m_package->GetItemAttribute(item, (HLPackageAttribute)attr, attribute)) {
-				return -ENOATTR;
+	if (strncmp(ITEM_ATTR_PREFIX, name, ITEM_ATTR_PREFIX_SIZE) == 0) {
+		for (hlUInt attr = 0, n = m_package->GetItemAttributeCount(); attr < n; ++ attr) {
+			const hlChar *attrName = m_package->GetItemAttributeName((HLPackageAttribute)attr);
+			if (hlfs_xattr_name_match(ITEM_ATTR_PREFIX, attrName, name)) {
+				const HLLib::CDirectoryFolder *root = m_package->GetRoot();
+				if (root == 0) return -ENOENT;
+
+				const HLLib::CDirectoryItem *item = root->GetRelativeItem(path);
+				HLAttribute attribute;
+				if (!m_package->GetItemAttribute(item, (HLPackageAttribute)attr, attribute)) {
+					return -ENOTSUP;
+				}
+				return hlfs_getxattr(attribute, buf, size);
 			}
-			return hlfs_getxattr(attribute, buf, size);
 		}
 	}
 
 	return -ENOATTR;
-}
-
-void HLFS::HLFS::clear() {
-	delete m_package;
-	m_package = 0;
 }
